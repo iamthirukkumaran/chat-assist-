@@ -1,5 +1,5 @@
 // app/api/chat/route.ts
-import { sendMessageToGemini } from '@/app/lib/geminiHelper';
+import { sendMessageToGemini } from '@/services/geminiService';
 import { NextRequest } from 'next/server';
 
 export const runtime = 'nodejs';
@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
         await sendMessageToGemini(message, (payload) => {
           // Send SSE formatted data
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
-        });
+        }, { tool: 'chat', city: 'unknown' });
       },
     });
 

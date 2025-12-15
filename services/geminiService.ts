@@ -1,5 +1,8 @@
+// app/lib/geminiService.ts
+
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { getWeather } from "./weatherService";
+import { getWeather } from "../services/weatherService";
+import { WeatherData } from "../app/types/index";
 
 /* ========================================================= */
 /*  Gemini Init                                              */
@@ -10,33 +13,46 @@ const genAI = new GoogleGenerativeAI(
 );
 
 const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+  model: "gemini-2.5-flash",
   systemInstruction: `
-You are Petty, a weather-only assistant.
+You are Petty, a friendly and conversational weather assistant 🌤️.
 
-Rules:
-- before answering weather questions, always ask the user shall i fetch the latest weather data for them give the two option only yes or no if they say yes fetch the data and provide it in your answer if they say no just reply normally without weather data
- give the answer to no option accordingly.
--introduce yourself as Petty
-- Answer only weather-related questions
-- Ask for city if missing
-- Be friendly and concise 🌤️
-- Provide data in structured format for the app to render
-- weathercard: include all relevant weather data
-- send the fetched weather data to the WeatherCard component
-- display weather in the card only, not in the text response
-`,
+Weather behavior:
+- When the user asks about weather (e.g., “What’s the weather in Paris?”, “weather in Chennai”, “Tell me the forecast for New York”):
+  - Ask for permission exactly once to fetch live weather data.
+  - The permission question must offer only two options: "Yes" or "No".
+  - Use the most recently mentioned city from the conversation.
+  - Never ask follow-up questions like “Which city?”
+
+After permission:
+- If the user replies "Yes":
+  - Immediately fetch and provide real-time weather data for the last mentioned city using the weather tool.
+  - Do not ask the permission question again.
+
+- If the user replies "No":
+  - Provide a general or descriptive weather-related explanation without using real or live data.
+  - Do not ask the permission question again.
+
+General rules:
+- Never repeat the permission question once it has been answered.
+- For non-weather-related questions, respond normally in a concise, friendly, and helpful manner.
+- Keep responses natural, polite, and conversational.
+
+`
 });
 
 /* ========================================================= */
 /*  Types                                                    */
 /* ========================================================= */
 
-export type StreamCallback = (text: string, done: boolean) => void;
-export type WeatherCallback = (data: any) => void;
+export type StreamCallback = (payload: {
+  type: "text" | "weather_data" | "done";
+  text?: string;
+  data?: WeatherData;
+}) => void;
 
 /* ========================================================= */
-/*  🔥 Character streaming helper                            */
+/*  Character streaming helper                               */
 /* ========================================================= */
 
 const streamChars = async (
@@ -45,74 +61,92 @@ const streamChars = async (
   delay = 15
 ) => {
   for (const char of text) {
-    onStream(char, false);
+    onStream({ type: "text", text: char });
     await new Promise((r) => setTimeout(r, delay));
   }
 };
 
 /* ========================================================= */
-/*  Main streaming function                                  */
+/*  Main Gemini Service                                      */
 /* ========================================================= */
 
 export const sendMessageToGemini = async (
-  message: string,
-  onStream: StreamCallback,
-  onWeatherData?: WeatherCallback
-) => {
+message: string, onStream: StreamCallback, p0: { tool: string; city: string; }) => {
   try {
     /* ----------------------------------------------------- */
-    /*  Extract city                                        */
+    /*  Detect weather intent                                */
     /* ----------------------------------------------------- */
+
+    const isWeatherQuery =
+      /weather|temperature|rain|sunny|cloud|forecast|humid|wind/i.test(
+        message
+      );
 
     const match =
       message.match(/weather in ([a-zA-Z\s]+)/i) ||
-      message.match(/in ([a-zA-Z\s]+)/i);
+      message.match(/in ([a-zA-Z\s]+)/i) ||
+      message.match(/for ([a-zA-Z\s]+)/i);
 
-    const city = match?.[1]?.trim();
+    let city = match?.[1]?.trim();
 
-    if (!city) {
-      await streamChars(
-        "🌤️ Please tell me the city you want the weather for.",
-        onStream
-      );
-      onStream("", true);
-      return;
+    if (isWeatherQuery && !city && message.split(" ").length <= 3) {
+      city = message.replace(
+        /weather|temperature|forecast|for|in/gi,
+        ""
+      ).trim();
     }
 
-    await streamChars(`🔍 Checking weather for ${city}...\n\n`, onStream);
-
     /* ----------------------------------------------------- */
-    /*  Fetch weather                                       */
+    /*  Weather flow                                         */
     /* ----------------------------------------------------- */
 
-    const weatherData = await getWeather(city);
+    if (isWeatherQuery && city) {
+      await streamChars(`🔍 Checking weather for ${city}...\n\n`, onStream);
 
-    if (!weatherData) {
-      await streamChars(
-        "❌ Sorry, I couldn't find weather data for that city.",
-        onStream
-      );
-      onStream("", true);
-      return;
-    }
+      const weatherData = await getWeather(city);
 
-    onWeatherData?.(weatherData);
+      if (!weatherData) {
+        await streamChars(
+          "❌ Sorry, I couldn't find weather data for that city.",
+          onStream
+        );
+        onStream({ type: "done" });
+        return;
+      }
 
-    /* ----------------------------------------------------- */
-    /*  Generate AI response                                 */
-    /* ----------------------------------------------------- */
+      /* Send weather card data */
+      onStream({ type: "weather_data", data: weatherData });
 
-    const prompt = `
-Summarize the weather in a friendly way.
+      /* Ask Gemini to summarize */
+      const prompt = `
+Summarize this weather in a friendly way:
 
 City: ${weatherData.location.name}
 Temperature: ${weatherData.current.temp_c}°C
 Condition: ${weatherData.current.condition.text}
 Humidity: ${weatherData.current.humidity}%
 Wind: ${weatherData.current.wind_kph} km/h
+Feels Like: ${weatherData.current.feelslike_c}°C
 `;
 
-    const result = await model.generateContentStream(prompt);
+      const result = await model.generateContentStream(prompt);
+
+      for await (const chunk of result.stream) {
+        const text = chunk.text();
+        if (text) {
+          await streamChars(text, onStream, 12);
+        }
+      }
+
+      onStream({ type: "done" });
+      return;
+    }
+
+    /* ----------------------------------------------------- */
+    /*  General conversation                                 */
+    /* ----------------------------------------------------- */
+
+    const result = await model.generateContentStream(message);
 
     for await (const chunk of result.stream) {
       const text = chunk.text();
@@ -121,9 +155,13 @@ Wind: ${weatherData.current.wind_kph} km/h
       }
     }
 
-    onStream("", true);
+    onStream({ type: "done" });
   } catch (error) {
     console.error("Gemini error:", error);
-    onStream("\n⚠️ Something went wrong. Try again.", true);
+    await streamChars(
+      "\n⚠️ Something went wrong. Please try again.",
+      onStream
+    );
+    onStream({ type: "done" });
   }
 };
