@@ -135,6 +135,25 @@ const ChatInterface: React.FC = () => {
             );
           }
 
+          // permission request from server
+          if (payload.type === "permission") {
+            // set the model message content and mark it as needing permission
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === aiMessageId
+                  ? {
+                      ...m,
+                      content: payload.text || `Shall I fetch the latest weather data?`,
+                      needsPermission: true,
+                      permissionCity: payload.city,
+                      isStreaming: false,
+                    }
+                  : m
+              )
+            );
+            setIsLoading(false);
+          }
+
           if (payload.type === "weather_data") {
             setMessages((prev) =>
               prev.map((m) =>
@@ -176,6 +195,120 @@ const ChatInterface: React.FC = () => {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const streamResponse = async (
+    body: { message: string; consent?: boolean; city?: string },
+    aiMessageId: string
+  ) => {
+    setIsLoading(true);
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.body) throw new Error("No response body");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let textAcc = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
+
+        for (const chunk of chunks) {
+          if (!chunk.startsWith("data:")) continue;
+
+          const payload = JSON.parse(chunk.replace("data:", "").trim());
+
+          if (payload.type === "text") {
+            textAcc += payload.text;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === aiMessageId ? { ...m, content: textAcc } : m
+              )
+            );
+          }
+
+          if (payload.type === "weather_data") {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === aiMessageId
+                  ? { ...m, weatherData: payload.data }
+                  : m
+              )
+            );
+          }
+
+          if (payload.type === "done") {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === aiMessageId ? { ...m, isStreaming: false } : m
+              )
+            );
+            setIsLoading(false);
+          }
+        }
+      }
+    } catch (err) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === aiMessageId
+            ? {
+                ...m,
+                content: "⚠️ Sorry, something went wrong.",
+                isStreaming: false,
+              }
+            : m
+        )
+      );
+      setIsLoading(false);
+    }
+  };
+
+  const handlePermissionResponse = async (
+    city: string | undefined,
+    consent: boolean,
+    messageId: string
+  ) => {
+    // disable permission buttons on that message
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, needsPermission: false } : m))
+    );
+
+    // add user reply
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: "user",
+      content: consent ? "Yes" : "No",
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, userMessage]);
+
+    // add AI placeholder
+    const aiMessageId = (Date.now() + 1).toString();
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: aiMessageId,
+        role: "model",
+        content: "",
+        timestamp: new Date(),
+        isStreaming: true,
+      },
+    ]);
+
+    // send consent and city to API
+    await streamResponse({ message: consent ? "Yes" : "No", consent, city }, aiMessageId);
   };
 
   const quickCities = [
@@ -229,7 +362,7 @@ const ChatInterface: React.FC = () => {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {messages.map((msg) => (
-          <ChatMessage key={msg.id} message={msg} />
+          <ChatMessage key={msg.id} message={msg} onPermission={handlePermissionResponse} />
         ))}
         <div ref={messagesEndRef} />
       </div>

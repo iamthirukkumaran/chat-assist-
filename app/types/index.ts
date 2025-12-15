@@ -27,4 +27,8 @@ export interface Message {
   timestamp: string | Date;
   weatherData?: WeatherData;
   isStreaming?: boolean;
+  // when true, UI should render Yes/No permission buttons
+  needsPermission?: boolean;
+  // city for which permission is asked
+  permissionCity?: string;
 }

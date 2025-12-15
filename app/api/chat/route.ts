@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
   try {
-    const { message } = await req.json();
+    const { message, consent, city } = await req.json();
     if (!message) return new Response("No message", { status: 400 });
 
     const encoder = new TextEncoder();
@@ -14,9 +14,8 @@ export async function POST(req: NextRequest) {
     const stream = new ReadableStream({
       async start(controller) {
         await sendMessageToGemini(message, (payload) => {
-          // Send SSE formatted data
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
-        }, { tool: 'chat', city: 'unknown' });
+        }, { consent, city });
       },
     });
 

@@ -8,9 +8,10 @@ import WeatherCard from './WeatherCard';
 
 interface ChatMessageProps {
   message: Message;
+  onPermission?: (city: string | undefined, consent: boolean, messageId: string) => void;
 }
 
-const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
+const ChatMessage: React.FC<ChatMessageProps> = ({ message, onPermission }) => {
   const [isClient, setIsClient] = useState(false);
   const isUser = message.role === 'user';
 
@@ -74,6 +75,24 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 
           {/* Embedded Weather Card if available */}
           {message.weatherData && <WeatherCard data={message.weatherData} />}
+
+          {/* Permission buttons when required */}
+          {message.needsPermission && (
+            <div className="flex gap-2 mt-3">
+              <button
+                onClick={() => onPermission?.(message.permissionCity, true, message.id)}
+                className="px-3 py-1 bg-green-500 text-white rounded"
+              >
+                Yes
+              </button>
+              <button
+                onClick={() => onPermission?.(message.permissionCity, false, message.id)}
+                className="px-3 py-1 bg-gray-200 text-gray-700 rounded"
+              >
+                No
+              </button>
+            </div>
+          )}
 
           {/* Timestamp */}
           <span className="text-[10px] text-gray-400 mt-1 px-1">
